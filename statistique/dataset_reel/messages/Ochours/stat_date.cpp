@@ -1,0 +1,81 @@
+#include "fonction.h"
+#include <time.h>
+
+
+void writeFile(char* fileName, char* text, int pos, const char* mode){//Si po == fin alors ajouter a la fin 
+    FILE* file; 
+    file = fopen(fileName, mode);
+    if(file != NULL){
+        if(pos == 0)
+            fseek(file, pos, SEEK_SET); 
+
+        fprintf(file, "%s\n", text);
+        fclose(file);
+    }else{
+        printf("Erreur lors de l'ouverture du fichier %s\n", fileName);
+    }
+}
+
+
+
+int main(){
+
+    int nbNoeud = 10000;
+    int dateMax = 1000;
+    int coutMax = 1;
+    int nbGraphs = 1;
+    int nbEdges = 10000000;
+    int nbStep = 10;
+
+    int step = 1000; //Le saut.
+
+    char filename[] = "graph_edges";
+    char fileName[200];
+    
+    char statName[200];
+    char stat[200];
+    char text[200];
+    FILE *statFile = NULL, *moyFile = NULL;
+    clock_t debut, fin;
+    float temps;
+    float tempsMoy = 0;
+
+    sprintf(statName, "stat_a_%d_%d_%d.moy", nbNoeud, nbEdges, coutMax);
+    sprintf(stat, "stat_a_%d_%d_%d.result", nbNoeud, nbEdges, coutMax);
+
+    sprintf(text , "Date\tNum_graph\tTemps\tPath");
+    writeFile(stat, text, 0, "r+");
+    sprintf(text , "Date\tTemps_moy");
+    writeFile(statName, text, 0, "r+");
+
+    for(int i = 0; i < nbStep; i++){   
+        tempsMoy = 0; 
+
+        for(int j = 0; j < nbGraphs; j++){
+
+            sprintf(fileName, "%s_%d_%d_%d_%d.gr", filename, nbEdges, nbNoeud, dateMax, j);
+            Graphe_1* g1 = NULL;
+            g1 = fileToGraphe_1(fileName, nbNoeud, dateMax);
+
+            debut = clock();
+            Path chemin = path(g1, 0, nbNoeud);
+            fin = clock();
+            freeGraphe(g1);
+            printf("Le chemin est : %d\n", chemin.dateArrive);
+            //temps = (fin.tv_usec/1000)-(debut.tv_usec/1000);
+            temps = (float)(fin-debut)/ CLOCKS_PER_SEC;
+            tempsMoy += temps; 
+            printf("Le temps d'execution est %f\n", temps);
+            sprintf(text , "%d\t%d\t%f\t%d", dateMax, j, temps, chemin.dateArrive);
+            writeFile(stat, text, -1, "a");
+
+        }
+        tempsMoy /= nbGraphs;
+        sprintf(text , "%d\t%f", dateMax, tempsMoy);
+        writeFile(statName, text, -1, "a");
+        
+        dateMax += step;
+    }
+
+    return 0;
+}
