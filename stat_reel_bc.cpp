@@ -1,230 +1,125 @@
+#ifndef DATA_DIR
+#define DATA_DIR "../../Experiment/Paris/dataset_reel"
+#endif
+
+#ifndef DATASET_NAME
+#define DATASET_NAME "network_temporal_day"
+#endif
+
 #include "fonction_bb.h"
-#include <time.h>
-#include <math.h>
+#include <ctime>
+#include <cstdio>
+#include <cstdlib>
 
-
-void writeFile(char* fileName, char* text, int pos, const char* mode){//Si po == fin alors ajouter a la fin 
-    FILE* file; 
-    file = fopen(fileName, mode);
-    if(file != NULL){
-        if(pos == 0)
-            fseek(file, pos, SEEK_SET); 
-
-        fprintf(file, "%s\n", text);
-        fclose(file);
-    }else{
-        printf("Erreur lors de l'ouverture du fichier %s\n", fileName);
-    }
+/* small util for writing headers */
+static void writeFile(const char* fileName, const char* text, const char* mode){
+    FILE* f = std::fopen(fileName, mode);
+    if(!f){ std::printf("Error opening %s\n", fileName); return; }
+    std::fprintf(f, "%s\n", text);
+    std::fclose(f);
 }
-
-void statTime(char *fileName, int etat){ //Si etat = 0 alors initialisation, si etat = 1 alors insertion.
-    char statName[200], stat[200], text[200];
-    
-    if(etat == 0){
-        sprintf(statName, "stat_%s.moy", fileName);
-        sprintf(stat, "stat_%s.result", fileName);
-
-        sprintf(text , "Src\tdst\tPath");
-
-        writeFile(stat, text, 0, "w");
-        sprintf(text , "src\tcc\tTemps_moy");
-        writeFile(statName, text, 0, "w");
-    }else{
-
-    }
-
+static void initStats(const char *baseName){
+    char statName[256], stat[256];
+    std::snprintf(statName, sizeof(statName), "stat_%s.moy", baseName);
+    std::snprintf(stat,     sizeof(stat),     "stat_%s.result", baseName);
+    writeFile(stat,    "Src\tdst\tPath",   "w");
+    writeFile(statName,"src\tcc\tTemps_moy","w");
 }
-
 
 int main(){
+    /* === CONFIG === */
+    int   nbNoeud = 35370;     // set to (max_id + 1)
+    int   dateMax = 1440;      // minutes 0..1439
+    const char dataPrefix[] = DATA_DIR "/" DATASET_NAME;
+    const char statPrefix[] = DATASET_NAME;
+    initStats(statPrefix);
 
-    int nbNoeud = 7552;
-    int dateMax = 1457;
-    
-    int tabS[nbNoeud];
-    int tabD[nbNoeud];
+    /* === Read .src / .dst === */
+    std::vector<int> tabS; tabS.reserve(10000);
+    std::vector<int> tabD; tabD.reserve(10000);
+    {
+        char path[512];
+        std::snprintf(path, sizeof(path), "%s.src", dataPrefix);
+        FILE* f = std::fopen(path, "r");
+        if(!f){ std::printf("Error opening %s\n", path); return 1; }
+        int id;
+        while(std::fscanf(f, "%d", &id)==1) tabS.push_back(id);
+        std::fclose(f);
 
-    int tailleS = 0,  tailleD = 0;
-
-
-    char filename[] = "network_temporal_day";
-    char fileName[200];
-    
-    char statName[200];
-    char stat[200];
-    char text[200];
-
-    FILE *statFile = NULL, *moyFile = NULL;
-    clock_t debut, fin;
-    float temps;
-    float tempsMoy = 0;
-    
-    
-    statTime(filename, 0);
-
-    sprintf(fileName, "./dataset_reel/%s.src", filename);
-    FILE* fichier = NULL;
-    
-    
-    fichier = fopen(fileName, "r");
-    if(fichier == NULL){
-        printf("Erreur lors de l'ouverture du fichier %s\n", fileName);
-    }else{
-        int id = 0;
-        while(!feof(fichier)){
-            fscanf(fichier, "%d\n", &id);
-            tabS[tailleS] = id;
-            tailleS++;
-        }
-        fclose(fichier);
-    }
-     
-    sprintf(fileName, "./dataset_reel/%s.dst", filename);
-    fichier = fopen(fileName, "r");
-    if(fichier == NULL){
-        printf("Erreur lors de l'ouverture du fichier %s\n", fileName);
-    }else{
-        int id = 0;
-        while(!feof(fichier)){
-            fscanf(fichier, "%d\n", &id);
-            tabD[tailleD] = id;
-            tailleD++;
-        }
-        fclose(fichier);
+        std::snprintf(path, sizeof(path), "%s.dst", dataPrefix);
+        f = std::fopen(path, "r");
+        if(!f){ std::printf("Error opening %s\n", path); return 1; }
+        while(std::fscanf(f, "%d", &id)==1) tabD.push_back(id);
+        std::fclose(f);
     }
 
-    aretes *a;
-    sprintf(fileName, "dataset_reel/%s.txt", filename);
-    printf("Hello how are you\n");
-    a = fileToTables(fileName);
-    
-    Graphe_1* g1 = NULL;
-    printf("%d\n", a->taille);
-    g1 = tableToGraphe(a->dates, a->srcs, a->dsts, a->couts, a->taille, nbNoeud, dateMax);
-    printf("Arriver ici\n");
-   
-    double tempsTable[nbNoeud];
-    double cc[nbNoeud];
-    double bc[nbNoeud];
-    int nb = 0; 
-    //FILE *fichier_bc = NULL;
-    //fichier_bc = fopen("s_t_chemins.paris", "w");
-    int chemins[nbNoeud];
-    for(int i = 0; i < tailleS; i++){
-        
-        
-        for(int a = 0; a < nbNoeud; a++){
-            chemins[a] = -1; 
-        }
-        
-        
-        ListChemin *pathsChemin[nbNoeud];
+    /* === Read edges & build TE graph === */
+    char edgesPath[512];
+    std::snprintf(edgesPath, sizeof(edgesPath), "%s.txt", dataPrefix);
+    std::printf("Reading edges: %s\n", edgesPath);
+    aretes *a = fileToTables(edgesPath);
+    if(!a){ std::printf("fileToTables failed.\n"); return 1; }
+    std::printf("Edges read: %d\n", a->taille);
 
-        for(int i = 0; i < nbNoeud; i++){
-            pathsChemin[i] = NULL;
-        }
-        tempsMoy = 0; 
-        //printf("Start calcule\n");
-        debut = clock();
-        Path chemin = paths_bb(g1, tabS[i], chemins, pathsChemin);
+    Graphe_1* g = tableToGraphe(a->dates, a->srcs, a->dsts, a->couts, a->taille, nbNoeud, dateMax);
+    if(!g){ std::printf("tableToGraphe failed.\n"); return 1; }
+    std::printf("TE graph built. time-nodes=%d\n", g->nbNoeudTemps);
 
-        for(int a = 0; a < nbNoeud; a++){
-            if(pathsChemin[a] != NULL){
-                //printf("%d vers le noeud %d le plus cours est %d\n",tabS[15], a, chemins[a]);
-                //fprintf(fichier_bc, "%d %d ", tabS[i], a); 
-                nb = fromBitToId(pathsChemin[a], nbNoeud, tabS[i], a, bc);
+    /* === Arrays for results === */
+    std::vector<double> bc(nbNoeud, 0.0);
+    std::vector<double> tempsTable(nbNoeud, 0.0);
+    std::vector<int>    paths(nbNoeud, -1);
+
+    /* === Compute BC per source (sequential; parallelize if needed) === */
+    for(size_t si=0; si<tabS.size(); ++si){
+        int s = tabS[si];
+        std::fill(paths.begin(), paths.end(), -1);
+        std::vector<ListChemin*> chemins(nbNoeud, nullptr);
+
+        std::clock_t t0 = std::clock();
+        Path info = paths_bb_v1(g, s, paths.data(), chemins.data());
+        (void)info;
+
+        // accumulate BC from families
+        for(int v=0; v<nbNoeud; ++v){
+            if(chemins[v]){
+                (void)fromBitToId_v1(chemins[v], nbNoeud, s, v, bc.data());
+                chemins[v] = nullptr; // freed inside
             }
         }
-        
-       fin = clock();
-    
-        
-        
-        temps = (float)(fin-debut)/ CLOCKS_PER_SEC;
-        tempsTable[tabS[i]] = temps;
-
-        printf("Le temps est %f %d\n",temps, tabS[i]);
-        //printf("Le temps est %lf\n", temps);
+        std::clock_t t1 = std::clock();
+        tempsTable[s] = double(t1 - t0) / double(CLOCKS_PER_SEC);
+        std::printf("src %d: %.6f s\n", s, tempsTable[s]);
     }
 
-    //fclose(fichier_bc);
-            
-            //printf("Calculer %d\n", chemin.dateArrive);
-            //printf("Le chemin est : %d\n", chemin.dateArrive);
-            //temps = (fin.tv_usec/1000)-(debut.tv_usec/1000);
-            
-       
-        //printf("%d %d %d\n\n", tabS[i], tabD[j], coumpte);
-        //printf("Le temps d'execution est %f\n", temps);
-    printf("Fin\n");
-
-    int degrerS[nbNoeud]; 
-    int degrerE[nbNoeud];
-
-    for(int i = 0; i < nbNoeud; i++){
-        degrerS[i] = 0;
-        degrerE[i] = 0;
+    /* === Degrees (single pass over file) === */
+    std::vector<int> outdeg(nbNoeud,0), indeg(nbNoeud,0);
+    {
+        FILE* f = std::fopen(edgesPath, "r");
+        if(!f){ std::printf("Error opening %s\n", edgesPath); return 1; }
+        int date, u, v, w;
+        while(std::fscanf(f, "%d %d %d %d", &date, &u, &v, &w)==4){
+            if(u>=0 && u<nbNoeud) outdeg[u]++;
+            if(v>=0 && v<nbNoeud) indeg[v]++;
+        }
+        std::fclose(f);
     }
 
-    printf("fin\n");
-    fichier = fopen(fileName, "r"); 
-    int date, ids, idd, cout; 
-
-    while(fscanf(fichier, "%d %d %d %d\n", &date, &ids, &idd, &cout) == 4){
-        degrerS[ids]++;
-        degrerE[idd]++; 
+    /* === Write BC results === */
+    char outPath[512];
+    std::snprintf(outPath, sizeof(outPath), "bc_%s_1.test", statPrefix);
+    FILE* fout = std::fopen(outPath, "w");
+    if(!fout){ std::printf("Error opening %s\n", outPath); return 1; }
+    for(int i=0;i<(int)tabS.size();++i){
+        int node = tabS[i];
+        std::fprintf(fout, "%d %d %d %lf %lf\n",
+            node, outdeg[node], indeg[node], bc[node], tempsTable[node]);
     }
+    std::fclose(fout);
 
-    fclose(fichier);
-    
-    sprintf(fileName, "bc_%s_1.test", filename);
-    statFile = fopen(fileName, "w");
-    
-    for(int i = 0; i < tailleS; i++){
-        fprintf(statFile, "%d %d %d %lf %lf\n", i, degrerS[i], degrerS[i], bc[i], tempsTable[i]);        
-    }
-    fclose(fichier);
-    /*
-    //printf("%lf\n", cc[tabS[0]]);
-    //fclose(statFile);
-    */
+    // Optionally free graph (can be large)
+    // freeGraphe(g);
+
+    std::printf("Done. Wrote %s\n", outPath);
     return 0;
 }
-
-
-
-/*
- cc[tabS[i]] = 0.0;
-        
-        char statName[200];
-        sprintf(statName, "%s_result.stat", filename);
-        fichier = fopen(statName, "a");
-        for(int j = 0; j < nbNoeud; j++){
-            if(chemins[j] != -1 && chemins[j] != 0){
-                
-                fprintf(fichier, "%d %d %d\n", tabS[i], j, chemins[j]);
-
-                cc[tabS[i]] += (1.0/(double)chemins[j]);
-                if(isinf(cc[tabS[i]])){
-                    printf("Hello %d", chemins[j]);
-                    exit(0);
-                }
-                //printf("%d %d %d\n", 0, j, chemins[j]);
-            }
-        }
-        fclose(fichier);
-        /*
-        for(int b = 0; b < 2000; b++){            
-            
-            if(chemins[b] != -1){
-                cc[tabS[i]] += (1.0/(double)chemins[b]); 
-                if(b == 1){
-                    printf("Hello %lf\n", cc[tabS[0]]);
-                }
-            }
-
-        }
-        
-        printf("%d %lf %lf\n",i, cc[tabS[i]], tempsTable[tabS[i]]);
-
-*/

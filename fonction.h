@@ -1,388 +1,171 @@
-#include <iostream>
-#include <stdio.h>
-#include <stdlib.h>
+#pragma once
+#include <cstdio>
+#include <cstdlib>
+#include <cstdint>
 #include <vector>
 
+/* ======= Public types (kept compatible) ======= */
+struct NoeudTemp;
+struct ListMin;    // not used in v1 (kept for compat)
+struct Graphe_1;
+struct FilsNoeud;  // kept for compat (adjacency as linked list)
+struct ListChemin;
+struct Path;
+struct aretes;
 
-typedef struct NoeudTemp NoeudTemp;
-typedef struct ListMin ListMin;
-
-typedef struct Graphe_1 Graphe_1;
-typedef struct FilsNoeud FilsNoeud;
-
-typedef struct ListChemin ListChemin;
-
-typedef struct Path Path;
-typedef struct aretes aretes;
+using word_t = uint64_t;      // 64-bit words for bitsets
+static constexpr int WORD_BITS = 64;
 
 struct Path{
-    int dateArrive = 0;
-    ListChemin* listchemin;
+    int dateArrive = -1;
+    ListChemin* listchemin = nullptr;
 };
-
 
 struct ListChemin{
-    unsigned char *listChem = NULL;
-    ListChemin* suivant = NULL;
+    word_t *listChem = nullptr; // 64-bit bitset
+    ListChemin* suivant = nullptr;
 };
 
-
-
 struct FilsNoeud{
-    NoeudTemp* noeud = NULL;
-    FilsNoeud* suivant = NULL;
+    NoeudTemp* noeud = nullptr;
+    FilsNoeud* suivant = nullptr;
 };
 
 struct NoeudTemp{
-    int id = -1; 
+    int id  = -1; 
     int date = -1;
-    FilsNoeud* first = NULL;
-    FilsNoeud* last = NULL;
-    ListChemin* listChemins = NULL;
+    FilsNoeud* first = nullptr;
+    FilsNoeud* last  = nullptr;
+    ListChemin* listChemins = nullptr; // list of path bitsets that arrive here
 };
 
 struct Graphe_1{
-    NoeudTemp** noeuds = NULL; //Un tableau des pointeurs vers les listes des noeuds temporel pour chaque noeuds. 
-    int nbNoued = -1; //Le nombre de noeuds.
-    int dateMax = -1; //Le taux 
-    int nbNoeudTemps = 0; //Le nombre de noeud temporels. 
+    NoeudTemp** noeuds = nullptr; // grid of size (dateMax * nbNoued)
+    int nbNoued = -1;             // number of physical nodes
+    int dateMax = -1;             // number of time steps (e.g., 1440)
+    int nbNoeudTemps = 0;         // materialized time-nodes
 };
 
-struct ListMin{
-    NoeudTemp* noeud = NULL;
-    ListMin* next_noeud = NULL;
-};
-
-
-
-struct aretes
-{
-    int *dates = NULL;
-    int *srcs = NULL;
-    int *dsts = NULL;
-    int *couts = NULL; 
+struct aretes{
+    int *dates = nullptr;
+    int *srcs  = nullptr;
+    int *dsts  = nullptr;
+    int *couts = nullptr; 
     int taille = 0; 
 };
 
+/* ======= Helpers ======= */
+static inline void set_bit(word_t* A, int i){
+    A[i / WORD_BITS] |= (word_t(1) << (i % WORD_BITS));
+}
+static inline bool test_bit(const word_t* A, int i){
+    return (A[i / WORD_BITS] >> (i % WORD_BITS)) & 1u;
+}
 
-Graphe_1 *fileToGraphe_1(char *fileName, int nbNoued, int dateMax){
-    Graphe_1 *g = NULL;
-    FILE *fichier = NULL;
-    int date = -1, src = -1, dst = -1, cout = -1; 
-    NoeudTemp *noeud = NULL;
-    NoeudTemp *noeudDest = NULL;
-    FilsNoeud* fils = NULL;
-    fichier = fopen(fileName, "r");
-    
-    if(fichier != NULL){
-        g = (Graphe_1*)malloc(sizeof(Graphe_1));
-        g->noeuds = (NoeudTemp**)malloc(sizeof(NoeudTemp*)*(nbNoued*dateMax));
-        
-        for(int i = 0; i < nbNoued*dateMax; i++){
-            *((g->noeuds)+i) = NULL;
-        }
-    
-        g->nbNoued = nbNoued;   
-        g->dateMax = dateMax;
-        
-        while(!feof(fichier)){
+/* ======= Safe reader: file -> arrays (auto-resize) ======= */
+static inline aretes *fileToTables(const char *fileName){
+    FILE *f = std::fopen(fileName, "r");
+    if (!f) { std::printf("Error opening file %s\n", fileName); return nullptr; }
 
-            fscanf(fichier, "%d %d %d %d\n",&date, &src, &dst, &cout);
-            //printf("%d %d %d %d\n", date, src, dst, cout);
-            noeud = (*((g->noeuds)+src+(date*nbNoued)));
-            noeudDest = (*((g->noeuds)+dst+((date+cout)*nbNoued)));
+    aretes *a = (aretes*)std::malloc(sizeof(aretes));
+    if (!a) { std::fclose(f); return nullptr; }
 
-            if( noeud == NULL ){//Le noeud temporel n'est pas déjà étais crée.
-                
-                noeud = (NoeudTemp*)malloc(sizeof(NoeudTemp));
-                noeud->id = src; 
-                noeud->date = date;
-                noeud->first = NULL;
-                noeud->last = NULL;
-                noeud->listChemins = NULL;
-                g->nbNoeudTemps++;
-                (*((g->noeuds)+src+(date*nbNoued))) = noeud;
+    int cap = 1'000'000;
+    a->dates = (int*)std::malloc(sizeof(int)*cap);
+    a->srcs  = (int*)std::malloc(sizeof(int)*cap);
+    a->dsts  = (int*)std::malloc(sizeof(int)*cap);
+    a->couts = (int*)std::malloc(sizeof(int)*cap);
+    a->taille = 0;
+    if(!a->dates || !a->srcs || !a->dsts || !a->couts){
+        std::printf("Initial allocation failed\n");
+        std::fclose(f);
+        std::free(a->dates); std::free(a->srcs); std::free(a->dsts); std::free(a->couts);
+        std::free(a); return nullptr;
+    }
 
-                
+    int date, src, dst, cout;
+    while (std::fscanf(f, "%d %d %d %d", &date, &src, &dst, &cout) == 4){
+        if (a->taille >= cap){
+            int newcap = cap * 2;
+            int *nd  = (int*)std::realloc(a->dates, sizeof(int)*newcap);
+            int *ns  = (int*)std::realloc(a->srcs , sizeof(int)*newcap);
+            int *ndd = (int*)std::realloc(a->dsts , sizeof(int)*newcap);
+            int *nc  = (int*)std::realloc(a->couts, sizeof(int)*newcap);
+            if(!nd || !ns || !ndd || !nc){
+                std::printf("Realloc failed (%d -> %d)\n", cap, newcap);
+                std::fclose(f);
+                if(nd) a->dates=nd; if(ns) a->srcs=ns; if(ndd)a->dsts=ndd; if(nc)a->couts=nc;
+                return a; // return partial for debugging
             }
-
-             if( noeudDest == NULL ){//Le noeud temporel n'est pas déjà étais crée.
-                
-                noeudDest = (NoeudTemp*)malloc(sizeof(NoeudTemp));
-                
-                noeudDest->id = dst; 
-                noeudDest->date = date+cout;
-                noeudDest->first = NULL;
-                noeudDest->last = NULL;
-                noeudDest->listChemins = NULL;
-                g->nbNoeudTemps++;
-                (*((g->noeuds)+dst+((date+cout)*nbNoued))) = noeudDest;
-            }
-
-            fils = (FilsNoeud*)malloc(sizeof(FilsNoeud));
-            fils->noeud = noeudDest; 
-            fils->suivant = NULL;
-
-            if(noeud->first == NULL){
-                noeud->first = fils;
-                noeud->last = fils;
-            }else{
-                noeud->last->suivant = fils;
-                noeud->last = fils;
-            }
-    
+            a->dates=nd; a->srcs=ns; a->dsts=ndd; a->couts=nc; cap=newcap;
         }
-        fclose(fichier);
-        return g;
-    }else{
-        printf("Erreur lors de l'ouverture du fichier");
-        return NULL;
+        a->dates[a->taille]=date; a->srcs[a->taille]=src;
+        a->dsts[a->taille]=dst;   a->couts[a->taille]=cout;
+        a->taille++;
     }
+    std::fclose(f);
+    return a;
 }
 
+/* ======= Arrays -> time expanded graph (bounds checked) ======= */
+static inline Graphe_1 *tableToGraphe(const int *dates, const int *srcs, const int *dsts,
+                                      const int *couts, int taille, int nbNoued, int dateMax){
+    Graphe_1 *g = (Graphe_1*)std::malloc(sizeof(Graphe_1));
+    if(!g) return nullptr;
+    const long long cells = (long long)nbNoued * (long long)dateMax;
+    g->noeuds = (NoeudTemp**)std::malloc(sizeof(NoeudTemp*) * (size_t)cells);
+    if(!g->noeuds){ std::free(g); return nullptr; }
 
-void printGraphe_1(Graphe_1 g){
-    NoeudTemp* noeud; 
-    FilsNoeud* fils = NULL;
-    int j = 0;
+    for(long long i=0;i<cells;i++) g->noeuds[i]=nullptr;
+    g->nbNoued=nbNoued; g->dateMax=dateMax; g->nbNoeudTemps=0;
 
-    for(int i = 0; i < g.nbNoued*g.dateMax; i++){
-        noeud = g.noeuds[i];
+    for(int idx=0; idx<taille; ++idx){
+        const int date=dates[idx], src=srcs[idx], dst=dsts[idx], cout=couts[idx];
+        if(date<0 || date>=dateMax || cout<=0) continue;
+        const int date2 = date + cout;
+        if(date2<0 || date2>=dateMax) continue;
+        if(src<0 || src>=nbNoued || dst<0 || dst>=nbNoued) continue;
 
-        if(noeud != NULL){
-            fils = noeud->first;
+        const long long iSrc = (long long)src + (long long)date  * nbNoued;
+        const long long iDst = (long long)dst + (long long)date2 * nbNoued;
+
+        NoeudTemp *u = g->noeuds[iSrc];
+        NoeudTemp *v = g->noeuds[iDst];
+        if(!u){
+            u = (NoeudTemp*)std::malloc(sizeof(NoeudTemp));
+            if(!u) return g;
+            u->id=src; u->date=date; u->first=u->last=nullptr; u->listChemins=nullptr;
+            g->noeuds[iSrc]=u; g->nbNoeudTemps++;
         }
-        
-        while(fils != NULL){
-        
-            printf("hello %d %d %d %d\n", noeud->date, noeud->id, fils->noeud->id, fils->noeud->date-noeud->date);
-            j++;
-
-            fils = fils->suivant;
+        if(!v){
+            v = (NoeudTemp*)std::malloc(sizeof(NoeudTemp));
+            if(!v) return g;
+            v->id=dst; v->date=date2; v->first=v->last=nullptr; v->listChemins=nullptr;
+            g->noeuds[iDst]=v; g->nbNoeudTemps++;
         }
+        FilsNoeud* e = (FilsNoeud*)std::malloc(sizeof(FilsNoeud));
+        if(!e) return g;
+        e->noeud = v; e->suivant=nullptr;
+        if(!u->first){ u->first=u->last=e; } else { u->last->suivant=e; u->last=e; }
     }
-
-    printf("%d\n", j);
-}
-
-
-
-void freeGraphe(Graphe_1 *g){
-
-    NoeudTemp* noeud = NULL;
-    FilsNoeud* fils = NULL;
-    FilsNoeud* par = NULL;
-    ListChemin *chemin = NULL;
-
-    for(int i = 0; i < g->nbNoued*g->dateMax; i++){
-
-        noeud = *(g->noeuds+i);
-
-        if(noeud != NULL){
-            
-            fils = noeud->first; 
-            par = noeud->first;
-            while(par != NULL){
-                fils = fils->suivant;
-                free(par);
-                par = fils;
-            }
-    
-            while(noeud->listChemins != NULL){
-                chemin = noeud->listChemins;
-                noeud->listChemins = noeud->listChemins->suivant;
-                free(chemin->listChem);
-                free(chemin);
-            }
-            free(noeud);
-        }
-    }
-
-    free(g->noeuds);
-    free(g);
-}
-
-ListMin* insertListMin(ListMin* first, NoeudTemp* noeud, int gool){
-
-    ListMin* last = NULL, *par = NULL;
-    ListMin* newNoued;
-
-    newNoued = (ListMin*)malloc(sizeof(ListMin));
-    newNoued->noeud = noeud;
-   
-    par = first;
-    while(par != NULL){
-
-        if((par->noeud->date) == (noeud->date)){
-            if(par->noeud->id == noeud->id){
-                return first;
-            }
-            if(noeud->id == gool)
-                break;
-        }
-        if(par->noeud->date > (noeud->date)){
-            break;
-        }
-
-        last = par;
-        par = par->next_noeud;
-    }
-    
-        
-    if(first == NULL){  
-        newNoued->next_noeud = NULL;
-        first = newNoued;
-        return first; 
-    }else{
-        newNoued->next_noeud = par;
-    }
-
-    if(last != NULL)
-        last->next_noeud = newNoued;
-    else{
-        return newNoued;
-    }
-    
-    return first;
-}
-
-
-void posBit(unsigned char* var, int pos){
-    int index = int(pos/8);
-    int offset = pos%8;
-
-    var[index] |= (1 << offset);
-}
-
-
-
-
-void printOpenList(ListMin* openList, int taille){
-    ListMin *par;
-    par = openList;
-    
-    while(par != NULL){
-        
-        printf("La date : %d, l'id: %d \n",par->noeud->date, par->noeud->id);
-        printf("Le chemin est : ");
-        for(int i = 0; i < taille; i++){
-            printf("%02X ", *((par->noeud->listChemins->listChem)+i));
-        }
-        printf("\n\n");
-        par = par->next_noeud;
-    }
-}
-
-
-
-
-aretes *fileToTables(char *fileName){
-
-    aretes *a = NULL;
-    FILE *fichier = NULL;
-    int date = -1, src = -1, dst = -1, cout = -1; 
-
-    fichier = fopen(fileName, "r");
-    a = (aretes*)malloc(sizeof(aretes));
-
-    (a->dates) = (int*)malloc((sizeof(int)*2000000));
-    (a->srcs) = (int*)malloc((sizeof(int)*2000000));
-    (a->dsts) = (int*)malloc((sizeof(int)*2000000));
-    (a->couts) = (int*)malloc((sizeof(int)*2000000));
-    (a->taille) = 0;
-    if(fichier != NULL){
-
-        while(fscanf(fichier, "%d %d %d %d\n",&date, &src, &dst, &cout) == 4){
-            //printf("%d %d %d %d\n", date, src, dst, cout);
-            
-           *((*a).dates + (*a).taille) = date;
-          
-            (a->srcs)[(a->taille)] = src;
-            (a->dsts)[(a->taille)] = dst;
-            (a->couts)[(a->taille)] = cout;
-            //printf("%d \n", a->taille);
-            (a->taille) += 1;
-            
-        }
-
-        fclose(fichier);
-        return a;
-    }else{
-        printf("Erreur lors de l'ouverture du fichier %s\n", fileName);
-        return a;
-    }
-}
-
-
-
-Graphe_1 *tableToGraphe(int *dates, int *srcs, int *dsts, int *couts, int taille, int nbNoued, int dateMax){
-    Graphe_1 *g = NULL;
-    int date = -1, src = -1, dst = -1, cout = -1; 
-    NoeudTemp *noeud = NULL;
-    NoeudTemp *noeudDest = NULL;
-    FilsNoeud* fils = NULL;
-    
-    
-    g = (Graphe_1*)malloc(sizeof(Graphe_1));
-    g->noeuds = (NoeudTemp**)malloc(sizeof(NoeudTemp*)*(nbNoued*dateMax));
-        
-    for(int i = 0; i < nbNoued*dateMax; i++){
-            *((g->noeuds)+i) = NULL;
-    }
-    
-    g->nbNoued = nbNoued;   
-    g->dateMax = dateMax;
-        
-    for(int index = 0; index < taille; index++){
-        
-        date = dates[index];
-        src = srcs[index];
-        dst = dsts[index];
-        cout = couts[index];
-
-        //printf("%d %d %d %d\n", date, src, dst, cout);
-
-        noeud = (*((g->noeuds)+src+(date*nbNoued)));
-        noeudDest = (*((g->noeuds)+dst+((date+cout)*nbNoued)));
-
-        if( noeud == NULL ){//Le noeud temporel n'est pas déjà étais crée.    
-            noeud = (NoeudTemp*)malloc(sizeof(NoeudTemp));
-            noeud->id = src; 
-            noeud->date = date;
-            noeud->first = NULL;
-            noeud->last = NULL;
-            noeud->listChemins = NULL;
-            g->nbNoeudTemps++;
-            (*((g->noeuds)+src+(date*nbNoued))) = noeud;
-        }
-
-        if( noeudDest == NULL ){//Le noeud temporel n'est pas déjà étais crée.
-                
-            noeudDest = (NoeudTemp*)malloc(sizeof(NoeudTemp));
-                
-            noeudDest->id = dst; 
-            noeudDest->date = date+cout;
-            noeudDest->first = NULL;
-            noeudDest->last = NULL;
-            noeudDest->listChemins = NULL;
-            g->nbNoeudTemps++;
-            (*((g->noeuds)+dst+((date+cout)*nbNoued))) = noeudDest;
-        }
-
-        fils = (FilsNoeud*)malloc(sizeof(FilsNoeud));
-        fils->noeud = noeudDest; 
-        fils->suivant = NULL;
-
-        if(noeud->first == NULL){
-            noeud->first = fils;
-            noeud->last = fils;
-        }else{
-            noeud->last->suivant = fils;
-            noeud->last = fils;
-        }
-    }
-    
     return g;
 }
 
-
+/* ======= Cleanup ======= */
+static inline void freeGraphe(Graphe_1 *g){
+    if(!g) return;
+    const long long cells = (long long)g->nbNoued * (long long)g->dateMax;
+    for(long long i=0;i<cells;i++){
+        NoeudTemp* u = g->noeuds[i];
+        if(!u) continue;
+        FilsNoeud* cur = u->first;
+        while(cur){ FilsNoeud* nxt=cur->suivant; std::free(cur); cur=nxt; }
+        while(u->listChemins){
+            ListChemin* c=u->listChemins; u->listChemins=c->suivant;
+            std::free(c->listChem); std::free(c);
+        }
+        std::free(u);
+    }
+    std::free(g->noeuds);
+    std::free(g);
+}
